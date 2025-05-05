@@ -1,13 +1,18 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using System.Collections.ObjectModel;
 using Microsoft.Data.Sqlite;
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+using Windows.Storage;
 
 namespace license1
 {
     public sealed partial class MainWindow : Window
     {
         public ObservableCollection<License> Licenses { get; set; } = new ObservableCollection<License>();
-
         private const string DbName = "licenses.db";
 
         public MainWindow()
@@ -62,59 +67,18 @@ namespace license1
 
         private void AddLicense_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new LicenseDialog();
-            dialog.Activate(); // Show the dialog
-            dialog.Closed += (s, args) =>
-            {
-                if (dialog.IsDialogConfirmed) // Check if the dialog was confirmed
-                {
-                    Licenses.Add(dialog.License); // Add the new license to the collection
-                    using (var connection = new SqliteConnection($"Data Source={DbName}"))
-                    {
-                        connection.Open();
-                        var command = connection.CreateCommand();
-                        command.CommandText = @"
-                            INSERT INTO licenses (software, license_key, expiry_date, category)
-                            VALUES ($software, $licenseKey, $expiryDate, $category)";
-                        command.Parameters.AddWithValue("$software", dialog.License.Software);
-                        command.Parameters.AddWithValue("$licenseKey", dialog.License.LicenseKey);
-                        command.Parameters.AddWithValue("$expiryDate", dialog.License.ExpiryDate);
-                        command.Parameters.AddWithValue("$category", dialog.License.Category);
-                        command.ExecuteNonQuery();
-                    }
-                }
-            };
+            ShowLicenseDialog();
         }
 
         private void EditLicense_Click(object sender, RoutedEventArgs e)
         {
             if (LicenseTable.SelectedItem is License selectedLicense)
             {
-                var dialog = new LicenseDialog(selectedLicense);
-                dialog.Activate();
-                dialog.Closed += (s, args) =>
-                {
-                    if (dialog.IsDialogConfirmed)
-                    {
-                        var updatedLicense = dialog.License;
-                        using (var connection = new SqliteConnection($"Data Source={DbName}"))
-                        {
-                            connection.Open();
-                            var command = connection.CreateCommand();
-                            command.CommandText = @"
-                                UPDATE licenses
-                                SET software = $software, license_key = $licenseKey, expiry_date = $expiryDate, category = $category
-                                WHERE software = $oldSoftware AND license_key = $oldLicenseKey";
-                            command.Parameters.AddWithValue("$software", updatedLicense.Software);
-                            command.Parameters.AddWithValue("$licenseKey", updatedLicense.LicenseKey);
-                            command.Parameters.AddWithValue("$expiryDate", updatedLicense.ExpiryDate);
-                            command.Parameters.AddWithValue("$category", updatedLicense.Category);
-                            command.Parameters.AddWithValue("$oldSoftware", selectedLicense.Software);
-                            command.Parameters.AddWithValue("$oldLicenseKey", selectedLicense.LicenseKey);
-                            command.ExecuteNonQuery();
-                        }
-                    }
-                };
+                SoftwareInput.Text = selectedLicense.Software;
+                LicenseKeyInput.Text = selectedLicense.LicenseKey;
+                ExpiryDateInput.Date = DateTime.Parse(selectedLicense.ExpiryDate);
+                CategoryInput.SelectedItem = selectedLicense.Category;
+                ShowLicenseDialog();
             }
         }
 
@@ -122,45 +86,148 @@ namespace license1
         {
             if (LicenseTable.SelectedItem is License selectedLicense)
             {
-                using (var connection = new SqliteConnection($"Data Source={DbName}"))
-                {
-                    connection.Open();
-                    var command = connection.CreateCommand();
-                    command.CommandText = "DELETE FROM licenses WHERE software = $software AND license_key = $licenseKey";
-                    command.Parameters.AddWithValue("$software", selectedLicense.Software);
-                    command.Parameters.AddWithValue("$licenseKey", selectedLicense.LicenseKey);
-                    command.ExecuteNonQuery();
-                }
-                LoadData();
+                Licenses.Remove(selectedLicense);
             }
         }
 
-        private void ExportCsv_Click(object sender, RoutedEventArgs e)
+        private void SaveLicense_Click(object sender, RoutedEventArgs e)
         {
-            // Implement CSV export logic
+            var newLicense = new License
+            {
+                Software = SoftwareInput.Text,
+                LicenseKey = LicenseKeyInput.Text,
+                ExpiryDate = ExpiryDateInput.Date.ToString("yyyy-MM-dd"),
+                Category = (CategoryInput.SelectedItem as ComboBoxItem)?.Content.ToString()
+            };
+
+            if (LicenseTable.SelectedItem is License selectedLicense)
+            {
+                // Update existing license
+                selectedLicense.Software = newLicense.Software;
+                selectedLicense.LicenseKey = newLicense.LicenseKey;
+                selectedLicense.ExpiryDate = newLicense.ExpiryDate;
+                selectedLicense.Category = newLicense.Category;
+            }
+            else
+            {
+                // Add new license
+                Licenses.Add(newLicense);
+            }
+
+            HideLicenseDialog();
         }
 
-        private void ImportCsv_Click(object sender, RoutedEventArgs e)
+        private void CancelLicense_Click(object sender, RoutedEventArgs e)
         {
-            // Implement CSV import logic
+            HideLicenseDialog();
         }
 
-        private void BackupDatabase_Click(object sender, RoutedEventArgs e)
+        private void ShowLicenseDialog()
         {
-            // Implement database backup logic
+            LicenseDialogPanel.Visibility = Visibility.Visible;
         }
 
-        private void RestoreDatabase_Click(object sender, RoutedEventArgs e)
+        private void HideLicenseDialog()
         {
-            // Implement database restore logic
+            LicenseDialogPanel.Visibility = Visibility.Collapsed;
+        }
+
+        private async void ExportCsv_Click(object sender, RoutedEventArgs e)
+        {
+            var picker = new Windows.Storage.Pickers.FileSavePicker();
+            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
+            picker.FileTypeChoices.Add("CSV File", new List<string> { ".csv" });
+            picker.SuggestedFileName = "licenses";
+
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+
+            var file = await picker.PickSaveFileAsync();
+            if (file != null)
+            {
+                var csvBuilder = new StringBuilder();
+                csvBuilder.AppendLine("Software,License Key,Expiry Date,Category");
+
+                foreach (var license in Licenses)
+                {
+                    csvBuilder.AppendLine($"{license.Software},{license.LicenseKey},{license.ExpiryDate},{license.Category}");
+                }
+
+                await FileIO.WriteTextAsync(file, csvBuilder.ToString());
+            }
+        }
+
+        private async void BackupDatabase_Click(object sender, RoutedEventArgs e)
+        {
+            var picker = new Windows.Storage.Pickers.FileSavePicker();
+            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
+            picker.FileTypeChoices.Add("Database File", new List<string> { ".db" });
+            picker.SuggestedFileName = "licenses_backup";
+
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+
+            var file = await picker.PickSaveFileAsync();
+            if (file != null)
+            {
+                File.Copy(DbName, file.Path, overwrite: true);
+            }
+        }
+
+        private async void RestoreDatabase_Click(object sender, RoutedEventArgs e)
+{
+    var picker = new Windows.Storage.Pickers.FileOpenPicker();
+    picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
+    picker.FileTypeFilter.Add(".db");
+    picker.FileTypeFilter.Add("*");
+
+    // Ensure the picker works in a WinUI 3 desktop app
+    var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+    WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+
+    var file = await picker.PickSingleFileAsync();
+    if (file != null)
+    {
+        try
+        {
+            string backupFilePath = file.Path;
+            string destinationPath = DbName;
+
+            // Copy the backup file to replace the current database
+            System.IO.File.Copy(backupFilePath, destinationPath, overwrite: true);
+
+            // Reload the data from the restored database
+            LoadData();
+
+            var dialog = new ContentDialog
+            {
+                Title = "Restore Successful",
+                Content = "The database has been successfully restored.",
+                CloseButtonText = "OK",
+                XamlRoot = this.Content.XamlRoot
+            };
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            var dialog = new ContentDialog
+            {
+                Title = "Restore Failed",
+                Content = $"An error occurred while restoring the database: {ex.Message}",
+                CloseButtonText = "OK",
+                XamlRoot = this.Content.XamlRoot
+            };
+            await dialog.ShowAsync();
         }
     }
+}
 
-    public class License
-    {
-        public string Software { get; set; }
-        public string LicenseKey { get; set; }
-        public string ExpiryDate { get; set; }
-        public string Category { get; set; }
+        public class License
+        {
+            public string Software { get; set; }
+            public string LicenseKey { get; set; }
+            public string ExpiryDate { get; set; }
+            public string Category { get; set; }
+        }
     }
 }
